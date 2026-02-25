@@ -91,6 +91,46 @@ def get_task_timeouts(spec: TaskSpec) -> float:
     return 300.0
 
 
+VALID_MACHINE_SIZES: list[tuple[float, float]] = [
+    (0.1, 0.1), (0.1, 0.2), (0.1, 0.4),
+    (0.5, 0.5), (0.5, 1), (0.5, 2),
+    (1, 1), (1, 2), (1, 4),
+    (2, 2), (2, 4), (2, 8),
+    (4, 4), (4, 8), (4, 16),
+]
+
+
+def get_task_machine_size(spec: TaskSpec) -> str:
+    """Derive MachineSize from task.toml cpu/memory, snapping up to nearest valid bucket."""
+    task_dir = get_task_directory(spec)
+    toml_path = task_dir / "task.toml"
+    req_cpu, req_mem = 1.0, 2.0  # defaults
+
+    if toml_path.exists():
+        import tomli
+        with open(toml_path, "rb") as f:
+            config = tomli.load(f)
+        env_cfg = config.get("environment", {})
+        if "cpus" in env_cfg:
+            req_cpu = float(env_cfg["cpus"])
+        if "memory" in env_cfg:
+            mem_str = str(env_cfg["memory"]).strip().upper()
+            if mem_str.endswith("G"):
+                req_mem = float(mem_str[:-1])
+            elif mem_str.endswith("M"):
+                req_mem = float(mem_str[:-1]) / 1024
+            else:
+                req_mem = float(mem_str)
+
+    # Find smallest valid size that fits both cpu and memory
+    for cpu, mem in VALID_MACHINE_SIZES:
+        if cpu >= req_cpu and mem >= req_mem:
+            return f"{cpu:g}:{mem:g}"
+
+    # Fallback to largest
+    return "4:16"
+
+
 def read_file(path: Path) -> str:
     """Read file contents."""
     with open(path, "r") as f:
@@ -153,10 +193,11 @@ class LlmsrBenchFull(Environment):
         self.task_dir = get_task_directory(self.parsed_task_spec)
         self.task_docker_image = get_task_docker_image(self.parsed_task_spec)
         self.verifier_timeout = get_task_timeouts(self.parsed_task_spec)
+        self.machine_size = get_task_machine_size(self.parsed_task_spec)
         self.sandbox_settings = SandboxSettings(
             environment=ENVIRONMENT_NAME,
             image=self.task_docker_image,
-            machine_size="1:2"
+            machine_size=self.machine_size
         )
         self.sandbox = self.or_client.sandbox(self.sandbox_settings)
 
