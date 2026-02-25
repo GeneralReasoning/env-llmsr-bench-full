@@ -317,7 +317,7 @@ class LlmsrBenchFull(Environment):
                 await self.sandbox.upload(item, dest)
         
         test_script_output, test_script_code = await self.sandbox.run(
-            "bash /tests/test.sh",
+            "export TEST_DIR=/tests && bash /tests/test.sh",
             timeout=self.verifier_timeout,
         )
         
