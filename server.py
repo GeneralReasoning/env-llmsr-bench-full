@@ -66,7 +66,7 @@ def get_task_docker_image(spec: TaskSpec) -> str:
     """Get the docker image reference for a task."""
     task_dir = get_task_directory(spec)
     sha_file = task_dir / "sha.txt"
-
+    
     if sha_file.exists():
         ref = sha_file.read_text().strip()
         # If it's a digest (sha256:...), prepend IMAGE_PREFIX
@@ -74,9 +74,21 @@ def get_task_docker_image(spec: TaskSpec) -> str:
             return f"{IMAGE_PREFIX}@{ref}"
         # Otherwise it's a full image reference (pre-built)
         return ref
-
+    
     # Fallback to tag-based reference
     return f"{IMAGE_PREFIX}:{spec.id}"
+
+
+def get_task_timeouts(spec: TaskSpec) -> float:
+    """Get verifier timeout from task.toml."""
+    task_dir = get_task_directory(spec)
+    toml_path = task_dir / "task.toml"
+    if toml_path.exists():
+        import tomli
+        with open(toml_path, "rb") as f:
+            config = tomli.load(f)
+        return config.get("verifier", {}).get("timeout_sec", 300.0)
+    return 300.0
 
 
 def read_file(path: Path) -> str:
@@ -87,7 +99,6 @@ def read_file(path: Path) -> str:
 
 IMAGE_PREFIX = "generalreasoning/env-llmsr-bench-full"
 ENVIRONMENT_NAME = "GeneralReasoning/llmsr-bench-full"
-SANDBOX_ENV: dict[str, str] = {}
 
 
 class BashInput(BaseModel):
@@ -133,19 +144,19 @@ def _shell_quote(s: str) -> str:
 
 class LlmsrBenchFull(Environment):
     """OpenReward environment for llmsr-bench-full tasks."""
-
+    
     def __init__(self, task_spec: JSONObject, secrets: dict[str, str] = {}) -> None:
         super().__init__(task_spec)
         self.parsed_task_spec = TaskSpec.model_validate(task_spec)
-
+        
         self.or_client = AsyncOpenReward(api_key=secrets.get("api_key"))
         self.task_dir = get_task_directory(self.parsed_task_spec)
         self.task_docker_image = get_task_docker_image(self.parsed_task_spec)
+        self.verifier_timeout = get_task_timeouts(self.parsed_task_spec)
         self.sandbox_settings = SandboxSettings(
             environment=ENVIRONMENT_NAME,
             image=self.task_docker_image,
-            machine_size="1:2",
-            env=SANDBOX_ENV or None,
+            machine_size="1:2"
         )
         self.sandbox = self.or_client.sandbox(self.sandbox_settings)
 
@@ -161,7 +172,7 @@ class LlmsrBenchFull(Environment):
     def list_splits(cls) -> list[str]:
         """Return available data splits."""
         return list(_load_splits().keys())
-
+    
     @classmethod
     def list_tasks(cls, split: str) -> list[JSONObject]:
         """Return task specifications for a split."""
@@ -171,7 +182,7 @@ class LlmsrBenchFull(Environment):
         """Get the task instruction prompt."""
         text = read_file(self.task_dir / "instruction.md")
         return [TextBlock(text=text)]
-
+    
     @tool
     async def bash(self, input: BashInput) -> ToolOutput:
         """Run a bash command in the container."""
@@ -186,18 +197,18 @@ class LlmsrBenchFull(Environment):
         if exit_code != 0:
             s = content if content else "(no output)"
             return _text_output(f"{s}\nExit code: {exit_code}")
-
+        
         count = content.count(input.old_str)
         if count == 0:
             return _text_output(f"Error: The string to replace was not found in {input.path}\nExit code: 1")
         if count > 1:
             return _text_output(f"Error: The string to replace appears {count} times in {input.path}. It must be unique.\nExit code: 1")
-
+        
         new_content = content.replace(input.old_str, input.new_str, 1)
         encoded = base64.b64encode(new_content.encode('utf-8')).decode('ascii')
         write_cmd = f"echo '{encoded}' | base64 -d > {_shell_quote(input.path)}"
         output, exit_code = await self.sandbox.run(write_cmd)
-
+        
         s = output if output else f"Successfully replaced string in {input.path}"
         return _text_output(f"{s}\nExit code: {exit_code}")
 
@@ -206,7 +217,7 @@ class LlmsrBenchFull(Environment):
         """View file contents or directory listings."""
         output, _ = await self.sandbox.run(f"test -d {_shell_quote(input.path)} && echo 'dir' || echo 'file'")
         is_dir = output.strip() == "dir"
-
+        
         if is_dir:
             cmd = f"find {_shell_quote(input.path)} -maxdepth 2 -not -path '*/\\.*' -not -path '*/node_modules/*' | head -100"
         else:
@@ -218,9 +229,9 @@ class LlmsrBenchFull(Environment):
                     cmd = f"cat -n {_shell_quote(input.path)} | sed -n '{start},{end}p'"
             else:
                 cmd = f"cat -n {_shell_quote(input.path)}"
-
+        
         output, exit_code = await self.sandbox.run(cmd)
-
+        
         if len(output) > 16000:
             lines = output.split('\n')
             mid = len(lines) // 2
@@ -229,7 +240,7 @@ class LlmsrBenchFull(Environment):
             output = '\n'.join(lines[:keep_start]) + \
                     f"\n\n... [truncated {len(lines) - keep_start - keep_end} lines] ...\n\n" + \
                     '\n'.join(lines[-keep_end:])
-
+        
         s = output if output else "(no output)"
         return _text_output(f"{s}\nExit code: {exit_code}")
 
@@ -239,32 +250,37 @@ class LlmsrBenchFull(Environment):
         parent_dir = "/".join(input.path.rsplit("/", 1)[:-1])
         if parent_dir:
             await self.sandbox.run(f"mkdir -p {_shell_quote(parent_dir)}")
-
+        
         encoded = base64.b64encode(input.file_text.encode('utf-8')).decode('ascii')
         write_cmd = f"echo '{encoded}' | base64 -d > {_shell_quote(input.path)}"
         output, exit_code = await self.sandbox.run(write_cmd)
-
+        
         s = output if output else f"Successfully created {input.path}"
         return _text_output(f"{s}\nExit code: {exit_code}")
-
+        
     @tool
     async def submit_answer(self) -> ToolOutput:
         """Submit your final answer, indicating that work is finished."""
         await self.sandbox.check_run("mkdir -p /tests")
         await self.sandbox.check_run("mkdir -p /logs/verifier")
-
+        
         # Upload entire tests directory
         tests_dir = self.task_dir / "tests"
         for item in tests_dir.rglob("*"):
             if item.is_file():
                 rel_path = item.relative_to(tests_dir)
                 dest = f"/tests/{rel_path}"
+                # Ensure parent directories exist
                 if len(rel_path.parts) > 1:
                     await self.sandbox.run(f"mkdir -p /tests/{rel_path.parent}")
                 await self.sandbox.upload(item, dest)
-
-        test_script_output, test_script_code = await self.sandbox.run("bash /tests/test.sh")
-
+        
+        test_script_output, test_script_code = await self.sandbox.run(
+            "bash /tests/test.sh",
+            timeout=self.verifier_timeout,
+        )
+        
+        # Read reward from either reward.txt or reward.json
         reward = 0.0
         try:
             reward_txt, rc = await self.sandbox.run("cat /logs/verifier/reward.txt")
@@ -272,7 +288,7 @@ class LlmsrBenchFull(Environment):
                 reward = float(reward_txt.strip())
         except Exception:
             pass
-
+        
         if reward == 0.0:
             try:
                 reward_json, rc = await self.sandbox.run("cat /logs/verifier/reward.json")
@@ -282,7 +298,7 @@ class LlmsrBenchFull(Environment):
                         reward = float(data.get("reward", list(data.values())[0]))
             except Exception:
                 pass
-
+        
         return ToolOutput(
             blocks=[TextBlock(text=f"{test_script_output}\n\n(exit {test_script_code})")],
             reward=reward,
