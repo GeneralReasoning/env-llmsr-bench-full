@@ -91,6 +91,18 @@ def get_task_timeouts(spec: TaskSpec) -> float:
     return 300.0
 
 
+def get_verifier_env(spec: TaskSpec) -> dict[str, str]:
+    """Get verifier env var templates from task.toml [verifier.env]."""
+    task_dir = get_task_directory(spec)
+    toml_path = task_dir / "task.toml"
+    if toml_path.exists():
+        import tomli
+        with open(toml_path, "rb") as f:
+            config = tomli.load(f)
+        return config.get("verifier", {}).get("env", {})
+    return {}
+
+
 VALID_MACHINE_SIZES: list[tuple[float, float]] = [
     (0.1, 0.1), (0.1, 0.2), (0.1, 0.4),
     (0.5, 0.5), (0.5, 1), (0.5, 2),
@@ -98,6 +110,21 @@ VALID_MACHINE_SIZES: list[tuple[float, float]] = [
     (2, 2), (2, 4), (2, 8),
     (4, 4), (4, 8), (4, 16),
 ]
+
+
+def _parse_memory_gb(env_cfg: dict) -> float:
+    """Parse memory from task.toml environment config to GB."""
+    if "memory" in env_cfg:
+        mem_str = str(env_cfg["memory"]).strip().upper()
+        if mem_str.endswith("G"):
+            return float(mem_str[:-1])
+        elif mem_str.endswith("M"):
+            return float(mem_str[:-1]) / 1024
+        else:
+            return float(mem_str)
+    elif "memory_mb" in env_cfg:
+        return float(env_cfg["memory_mb"]) / 1024
+    return 2.0
 
 
 def get_task_machine_size(spec: TaskSpec) -> str:
@@ -113,14 +140,7 @@ def get_task_machine_size(spec: TaskSpec) -> str:
         env_cfg = config.get("environment", {})
         if "cpus" in env_cfg:
             req_cpu = float(env_cfg["cpus"])
-        if "memory" in env_cfg:
-            mem_str = str(env_cfg["memory"]).strip().upper()
-            if mem_str.endswith("G"):
-                req_mem = float(mem_str[:-1])
-            elif mem_str.endswith("M"):
-                req_mem = float(mem_str[:-1]) / 1024
-            else:
-                req_mem = float(mem_str)
+        req_mem = _parse_memory_gb(env_cfg)
 
     # Find smallest valid size that fits both cpu and memory
     for cpu, mem in VALID_MACHINE_SIZES:
@@ -190,9 +210,11 @@ class LlmsrBenchFull(Environment):
         self.parsed_task_spec = TaskSpec.model_validate(task_spec)
         
         self.or_client = AsyncOpenReward(api_key=secrets.get("api_key"))
+        self.secrets = secrets
         self.task_dir = get_task_directory(self.parsed_task_spec)
         self.task_docker_image = get_task_docker_image(self.parsed_task_spec)
         self.verifier_timeout = get_task_timeouts(self.parsed_task_spec)
+        self.verifier_env = get_verifier_env(self.parsed_task_spec)
         self.machine_size = get_task_machine_size(self.parsed_task_spec)
         self.sandbox_settings = SandboxSettings(
             environment=ENVIRONMENT_NAME,
@@ -316,8 +338,19 @@ class LlmsrBenchFull(Environment):
                     await self.sandbox.run(f"mkdir -p /tests/{rel_path.parent}")
                 await self.sandbox.upload(item, dest)
         
+        # Resolve verifier env vars from secrets
+        import re as _re
+        env_exports = ""
+        for key, val_template in self.verifier_env.items():
+            resolved = _re.sub(
+                r'\$\{([^}]+)\}',
+                lambda m: self.secrets.get(m.group(1), ""),
+                str(val_template),
+            )
+            env_exports += f"export {key}={resolved} && "
+        
         test_script_output, test_script_code = await self.sandbox.run(
-            "export TEST_DIR=/tests && bash /tests/test.sh",
+            f"{env_exports}export TEST_DIR=/tests && bash /tests/test.sh",
             timeout=self.verifier_timeout,
         )
         
