@@ -94,24 +94,6 @@ The original paper reports that the best-performing system achieves 31.5% symbol
 
 [Additional statistics on environment difficulty here]
 
-## Other Environment Requirements
-
-LLM-SR Bench requires an OpenReward API key for sandbox access:
-
-- **api_key**: Required in secrets parameter for OpenReward sandbox API
-
-Export it before running:
-
-```bash
-export OPENREWARD_API_KEY=your_api_key_here
-```
-
-Pass the key via the secrets parameter when creating a session:
-
-```python
-async with environment.session(task=task, secrets={"api_key": OPENREWARD_API_KEY}) as session:
-```
-
 ## Safety
 
 LLM-SR Bench tasks are run in isolated sandbox environments. Agents interact only with pre-defined scientific data files and cannot affect external systems. The environment focuses on mathematical equation discovery and does not involve safety-sensitive domains.
