@@ -6,7 +6,7 @@
 
 **LLM-SR Bench** (Large Language Model Symbolic Regression Benchmark) is an environment for evaluating language model agents on scientific equation discovery tasks. Agents are given experimental data and must discover the underlying mathematical equation that describes the relationship between variables. The benchmark is designed to prevent trivial memorization by transforming familiar physical models into uncommon mathematical forms.
 
-This OpenReward implementation is ported from the [Harbor Framework](https://harborframework.com/) by [Ziyu She](https://github.com/SheZiyu).
+This OpenReward implementation is ported from the [Harbor Framework](https://harborframework.com/) implementation originally made by [Ziyu She](https://github.com/SheZiyu).
 
 ## Capabilities
 
