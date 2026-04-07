@@ -158,7 +158,7 @@ def read_file(path: Path) -> str:
 
 
 IMAGE_PREFIX = "generalreasoning/env-llmsr-bench-full"
-ENVIRONMENT_NAME = "GeneralReasoning/llmsr-bench-full"
+ENVIRONMENT_NAME = "parshinsh/llmsr-bench-full"
 
 
 class BashInput(BaseModel):
